@@ -1,0 +1,21 @@
+{
+  "name": "symbl-rta-vapi",
+  "version": "1.0.0",
+  "description": "Symbl Real-Time Assistance with vapi",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "symbl",
+    "real-time-assistance",
+    "vapi"
+  ],
+  "dependencies": {
+    "@symblai/symbl-js": "^1.4.10",
+    "@vapi-ai/server-sdk": "^0.1.0",
+    "body-parser": "^1.20.3",
+    "express": "^4.21.1",
+    "websocket": "^1.0.34"
+  }
+}
