@@ -25,7 +25,16 @@ const getWebSocketClient = async () => {
     return client;
 }
 
-const splitChannels = async (dataBuffer) => {
+
+const splitChannels = (dataBuffer) => {
+
+    if (!Buffer.isBuffer(dataBuffer)) {
+        throw new TypeError("Input must be a Buffer");
+    }
+    if (dataBuffer.length % 4 !== 0) {
+        console.warn("Buffer length is not a multiple of 4. Truncated data may exist.");
+    }
+
     const leftChannel = [];
     const rightChannel = [];
 
@@ -39,7 +48,18 @@ const splitChannels = async (dataBuffer) => {
         }
     }
 
-    return {leftChannel, rightChannel};
+    const leftBuffer = Buffer.alloc(leftChannel.length * 2);
+    const rightBuffer = Buffer.alloc(rightChannel.length * 2);
+
+    for (let i = 0; i < leftChannel.length; i++) {
+        leftBuffer.writeInt16LE(leftChannel[i], i * 2);
+    }
+
+    for (let i = 0; i < rightChannel.length; i++) {
+        rightBuffer.writeInt16LE(rightChannel[i], i * 2);
+    }
+
+    return {leftBuffer, rightBuffer};
 }
 
 const getAccessToken = async (appId = process.env.SYMBL_APP_ID,
@@ -67,6 +87,7 @@ const connectToRTAEndpoint = async (sessionId, rtaId) => {
     const symblToken = await getAccessToken();
 
     const rtaUrl = `wss://api.symbl.ai/v1/realtime/assist/${rtaId}?access_token=${symblToken}`;
+    // const rtaUrl = `wss://api.symbl.ai/v1/streaming/${sessionId}?access_token=${symblToken}`;
     client.connect(rtaUrl, null, null, null, {
         rejectUnauthorized: false
     });
@@ -142,7 +163,7 @@ const phoneNumberId = process.env.PHONE_NUMBER_ID;
 const agentName = process.env.AGENT_NAME || "Ava";
 
 app.post('/start-call', async (req, res) => {
-    const call = await vapiClient.calls.create({
+    let call = await vapiClient.calls.create({
         assistantId: assistantId,
         phoneNumberId: phoneNumberId,
         customer: {
@@ -177,8 +198,22 @@ app.post('/start-call', async (req, res) => {
         });
     });
 
-    // This is just for demonstration, in a real-world scenario you would wait for the call status to change
-    await new Promise((resolve) => setTimeout(resolve, 10000));
+    call = await vapiClient.calls.get(call.id)
+    while (call.status !== 'in-progress') {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        call = await vapiClient.calls.get(call.id);
+        if (call.status === 'failed') {
+            throw new Error("Call failed to connect.");
+        } else if (call.status === 'completed') {
+            throw new Error("Call completed before connecting to RTA.");
+        } else {
+            console.log("Call status:", call.status);
+        }
+    }
+
+
+    // // This is just for demonstration, in a real-world scenario you would wait for the call status to change
+    // await new Promise((resolve) => setTimeout(resolve, 10000));
 
     const client = await getWebSocketClient()
     // Connect to the vapi listenUrl to receive audio data
@@ -191,21 +226,39 @@ app.post('/start-call', async (req, res) => {
     client.on('connect', (connection) => {
         console.log('Websocket connected');
 
+        let chunkCount = 0;
+
         connection.on('message', async (data) => {
             if (data.type === 'utf8') {
                 console.log('Received message:', JSON.parse(data.utf8Data));
             }
 
             if (data.type === 'binary') {
+                chunkCount++;
                 const binaryData = data.binaryData;
-                const buffer = Buffer.from(binaryData);
-                const {leftChannel, rightChannel} = await splitChannels(buffer);
-                sessions[id]['customer'].send(Buffer.from(leftChannel));
-                sessions[id]['agent'].send(Buffer.from(rightChannel));
-                // console.log('Left Channel:', Buffer.from(leftChannel));
-                // console.log('Right Channel:', Buffer.from(rightChannel));
+                const {leftBuffer, rightBuffer} = splitChannels(binaryData);
+                // console.log('Left Channel:', Buffer.from(leftBuffer));
+                // console.log('Right Channel:', Buffer.from(rightBuffer));
+                sessions[id]['customer'].sendBytes(leftBuffer);
+                sessions[id]['agent'].sendBytes(rightBuffer);
+
+                if (chunkCount % 100 === 0) {
+                    console.log(`Processed ${chunkCount} audio chunks so far.`);
+                }
             }
-        })
+        });
+
+        connection.on('error', (error) => {
+            console.error("Error in VAPI WebSocket:", error);
+            // sessions[id]['customer'].send(JSON.stringify({type: 'stop_request'}));
+            sessions[id]['agent'].send(JSON.stringify({type: 'stop_request'}));
+        });
+
+        connection.on('close', () => {
+            console.log("VAPI WebSocket closed.");
+            // sessions[id]['customer'].send(JSON.stringify({type: 'stop_request'}));
+            sessions[id]['agent'].send(JSON.stringify({type: 'stop_request'}));
+        });
     });
 
     await new Promise((resolve) => setTimeout(resolve, 600000));
@@ -213,6 +266,6 @@ app.post('/start-call', async (req, res) => {
     res.send('Call done.');
 });
 
-app.listen(3000, () => {
+app.listen(3030, () => {
     console.log('Server started on port 3000');
 });
